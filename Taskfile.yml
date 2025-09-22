@@ -1,0 +1,13 @@
+# https://taskfile.dev
+
+version: "3"
+
+tasks:
+  default:
+    cmds:
+      - task --list-all
+    silent: true
+  dev:
+    cmds:
+      - flutter run -d macos
+    desc: Run the app in development mode
