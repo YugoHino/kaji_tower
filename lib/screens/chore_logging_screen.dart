@@ -8,7 +8,6 @@ class ChoreLoggingScreen extends StatefulWidget {
 }
 
 class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
-  // TODO: Move to a separate data model class
   final List<String> _basicChores = [
     '掃除機',
     'トイレ掃除',
@@ -26,7 +25,34 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
 
   OverlayEntry? _overlayEntry;
   Offset? _startGlobalPosition;
-  String _currentDirection = 'center'; // 'center','up','right','left','down'
+  Offset? _primaryOrigin;
+  Offset? _secondaryOrigin;
+  // 2段階フリック用状態
+  int _flickStage = 0; // 0 = primary, 1 = secondary
+  String _currentPrimary = 'center';
+  String _currentSecondary = 'center';
+  String? _selectedPrimaryDir; // primaryで選ばれ、submenuがある場合にセット
+
+  // chore-specific action mapping (例として "洗濯物" に二段目を用意)
+  // primary keys: 'center','up','right','left','down'
+  // value: either {'label': '...'} or {'label': '...', 'submenu': { 'up': {...}, 'down': {...} ... }}
+  final Map<String, Map<String, dynamic>> _choreActionMap = {
+    '洗濯物': {
+      'center': {'label': '1回分（既定）'},
+      'right': {
+        'label': '干した',
+        'submenu': {
+          'up': {'count': 10, 'label': '10枚以上'},
+          'down': {'count': 20, 'label': '20枚以上'},
+          'center': {'count': 5, 'label': '5枚'},
+        },
+      },
+      'left': {'label': '畳んだ'}, // サブメニューなし
+      'up': {'label': '移動した'},
+      'down': {'label': 'その他'},
+    },
+    // 他の家事はデフォルトの一次のみ（center/dirs -> label）
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -34,8 +60,8 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
       padding: const EdgeInsets.all(16.0),
       child: Wrap(
         direction: Axis.horizontal,
-        spacing: 8.0, // 横間隔
-        runSpacing: 8.0, // 折り返し時の縦間隔
+        spacing: 8.0,
+        runSpacing: 8.0,
         children: _basicChores
             .map((chore) => _buildChoreButton(chore))
             .toList(),
@@ -46,35 +72,150 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
   Widget _buildChoreButton(String chore) {
     return GestureDetector(
       onTap: () {
-        // 短押しは1部屋
-        _recordChore(chore, 1);
+        // 短押しは1部屋（もしくはデフォルト動作）
+        _recordChore(chore, 1, actionLabel: 'short tap');
       },
       onLongPressStart: (details) {
+        _primaryOrigin = details.globalPosition;
         _startGlobalPosition = details.globalPosition;
-        _currentDirection = 'center';
-        _showFlickMenu(details.globalPosition);
+        _flickStage = 0;
+        _currentPrimary = 'center';
+        _currentSecondary = 'center';
+        _selectedPrimaryDir = null;
+        _showFlickMenu(details.globalPosition, chore);
       },
       onLongPressMoveUpdate: (details) {
-        if (_startGlobalPosition != null) {
-          _updateFlickSelection(details.globalPosition);
-        }
+        if (_startGlobalPosition == null) return;
+        _handleFlickMove(details.globalPosition, chore);
       },
       onLongPressEnd: (details) {
-        // 長押し終了で確定
+        // 確定処理
+        _finalizeFlick(chore);
         _hideFlickMenu();
-        final count = _directionToCount(_currentDirection);
-        _recordChore(chore, count);
         _startGlobalPosition = null;
-        _currentDirection = 'center';
+        _flickStage = 0;
+        _currentPrimary = 'center';
+        _currentSecondary = 'center';
+        _selectedPrimaryDir = null;
+        _primaryOrigin = null;
+        _secondaryOrigin = null;
       },
       child: ElevatedButton(
-        onPressed: null, // GestureDetectorで処理するため null にして高階層で制御
+        onPressed: null,
         style: ElevatedButton.styleFrom(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         ),
         child: Text(chore),
       ),
     );
+  }
+
+  void _handleFlickMove(Offset currentGlobal, String chore) {
+    if (_flickStage == 0) {
+      final primaryDir = _calcDirection(_startGlobalPosition!, currentGlobal);
+      if (primaryDir != _currentPrimary) {
+        _currentPrimary = primaryDir;
+        // primary が submenu を持っていれば stage を 1 に遷移して基準をリセット
+        final primaryHasSub = _hasSubmenu(chore, primaryDir);
+        if (primaryHasSub && primaryDir != 'center') {
+          _flickStage = 1;
+          _selectedPrimaryDir = primaryDir;
+          // ここから二次フリックを測るため、secondary origin を今の位置にリセット
+          _secondaryOrigin = currentGlobal;
+          // keep primaryOrigin (long press start) so we can detect returning to primary
+          _startGlobalPosition =
+              _secondaryOrigin; // maintain compatibility where startGlobalPosition is used
+
+          _currentSecondary = 'center';
+        }
+        _overlayEntry?.markNeedsBuild();
+      }
+    } else {
+      // stage == 1 : secondary の判定
+      // 設定: secondary 判断は secondaryOrigin を基準に行う
+      final secOrigin = _secondaryOrigin ?? _startGlobalPosition!;
+      final secondaryDir = _calcDirection(secOrigin, currentGlobal);
+
+      // 追加: currentGlobal が再び一次起点（primaryOrigin）側へ移動した場合は一次に戻す
+      if (_primaryOrigin != null) {
+        final primaryFromPrimaryOrigin = _calcDirection(
+          _primaryOrigin!,
+          currentGlobal,
+        );
+        // primary が center または 別の一次方向に変わったら一次ステージに戻す
+        if (primaryFromPrimaryOrigin == 'center' ||
+            primaryFromPrimaryOrigin != _selectedPrimaryDir) {
+          _flickStage = 0;
+          _currentPrimary = primaryFromPrimaryOrigin;
+          _selectedPrimaryDir = null;
+          _secondaryOrigin = null;
+          _currentSecondary = 'center';
+          _overlayEntry?.markNeedsBuild();
+          return;
+        }
+      }
+
+      if (secondaryDir != _currentSecondary) {
+        _currentSecondary = secondaryDir;
+        _overlayEntry?.markNeedsBuild();
+      }
+    }
+  }
+
+  String _calcDirection(Offset origin, Offset current) {
+    final dx = current.dx - origin.dx;
+    final dy = current.dy - origin.dy;
+    const threshold = 18;
+    if (dx.abs() < threshold && dy.abs() < threshold) return 'center';
+    if (dx.abs() > dy.abs()) return dx > 0 ? 'right' : 'left';
+    return dy > 0 ? 'down' : 'up';
+  }
+
+  bool _hasSubmenu(String chore, String primaryDir) {
+    final map = _choreActionMap[chore];
+    if (map == null) return false;
+    final entry = map[primaryDir];
+    if (entry == null) return false;
+    return entry['submenu'] != null;
+  }
+
+  void _finalizeFlick(String chore) {
+    // 二段階があれば二次選択を優先して処理
+    if (_flickStage == 1 && _selectedPrimaryDir != null) {
+      final primaryMap = _choreActionMap[chore]?[_selectedPrimaryDir!];
+      if (primaryMap != null && primaryMap['submenu'] != null) {
+        final submenu = Map<String, dynamic>.from(primaryMap['submenu']);
+        final sec = submenu[_currentSecondary] ?? submenu['center'];
+        if (sec != null) {
+          final label =
+              sec['label']?.toString() ??
+              primaryMap['label']?.toString() ??
+              chore;
+          final count = sec['count'] is int ? sec['count'] as int : null;
+          _recordChore(
+            chore,
+            count ?? _directionToCount(_selectedPrimaryDir!),
+            actionLabel: '${primaryMap['label']} → $label',
+          );
+          return;
+        }
+      }
+    }
+
+    // 二段階でない場合やサブが無い場合は一次のみで処理
+    final primaryLabel = _choreActionMap[chore]?[_currentPrimary]?['label'];
+    if (primaryLabel != null) {
+      // 一次ラベルがあれば使う
+      _recordChore(
+        chore,
+        _directionToCount(_currentPrimary),
+        actionLabel: primaryLabel.toString(),
+      );
+    } else {
+      // デフォルト: 一次方向から部屋数にマップ
+      final count = _directionToCount(_currentPrimary);
+      _recordChore(chore, count);
+    }
   }
 
   int _directionToCount(String dir) {
@@ -86,21 +227,21 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
       case 'left':
         return 4;
       case 'down':
-        return 5; // 5部屋以上を表す。必要なら別扱いに
+        return 5;
       case 'center':
       default:
         return 1;
     }
   }
 
-  void _recordChore(String chore, int count) {
-    // TODO: 実際の記録ロジックへ差し替え
-    final label = (count == 5) ? '5以上' : '$count';
-    print('$chore を記録しました: $label 部屋');
-    // 例えば setStateでUI反映や DB 書き込みを行う
+  void _recordChore(String chore, int? count, {String? actionLabel}) {
+    // 実際は DB や state 更新へ接続してください
+    final labelCount = (count == null) ? '' : (count == 5 ? '5以上' : '$count');
+    final labelAction = actionLabel != null ? ' / $actionLabel' : '';
+    print('$chore を記録しました: $labelCount 部屋$labelAction');
   }
 
-  void _showFlickMenu(Offset globalPosition) {
+  void _showFlickMenu(Offset globalPosition, String chore) {
     _overlayEntry?.remove();
     _overlayEntry = OverlayEntry(
       builder: (context) {
@@ -114,7 +255,12 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
           height: size,
           child: Material(
             color: Colors.transparent,
-            child: _buildFlickMenuContent(size),
+            child: StatefulBuilder(
+              builder: (context, setStateOverlay) {
+                // Overlay 内での描画は親 State のプロパティを参照する（markNeedsBuildで更新）
+                return _buildFlickMenuContent(size, chore);
+              },
+            ),
           ),
         );
       },
@@ -122,11 +268,11 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
     Overlay.of(context).insert(_overlayEntry!);
   }
 
-  Widget _buildFlickMenuContent(double size) {
+  Widget _buildFlickMenuContent(double size, String chore) {
     final itemSize = 44.0;
     final center = size / 2 - itemSize / 2;
-    Widget option(String dir, IconData icon, String label) {
-      final bool selected = _currentDirection == dir;
+
+    Widget option(String dir, String label, {bool selected = false}) {
       return Positioned(
         left: dir == 'left'
             ? center - 48
@@ -158,58 +304,159 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
           alignment: Alignment.center,
           child: Tooltip(
             message: label,
-            child: Icon(
-              icon,
-              size: 20,
-              color: selected ? Colors.white : Colors.black87,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4.0),
+              child: Text(
+                _shortLabel(label),
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: selected ? Colors.white : Colors.black87,
+                  fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                ),
+              ),
             ),
           ),
         ),
       );
     }
 
-    return Stack(
-      children: [
-        // 背景の薄い丸
-        Center(
-          child: Container(
-            width: size,
-            height: size,
-            decoration: BoxDecoration(
-              color: Colors.black12.withOpacity(0.03),
-              borderRadius: BorderRadius.circular(12),
-            ),
+    // Primary options
+    final primaryUpSelected = _currentPrimary == 'up' && _flickStage == 0;
+    final primaryRightSelected = _currentPrimary == 'right' && _flickStage == 0;
+    final primaryLeftSelected = _currentPrimary == 'left' && _flickStage == 0;
+    final primaryDownSelected = _currentPrimary == 'down' && _flickStage == 0;
+    final primaryCenterSelected =
+        _currentPrimary == 'center' && _flickStage == 0;
+
+    List<Widget> stack = [
+      Center(
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            color: Colors.black12.withOpacity(0.03),
+            borderRadius: BorderRadius.circular(12),
           ),
         ),
-        option('up', Icons.keyboard_arrow_up, '2部屋'),
-        option('right', Icons.keyboard_arrow_right, '3部屋'),
-        option('left', Icons.keyboard_arrow_left, '4部屋'),
-        option('down', Icons.keyboard_arrow_down, '5以上'),
-        option('center', Icons.circle, '1部屋'),
-      ],
-    );
-  }
+      ),
+      option('up', _labelFor(chore, 'up'), selected: primaryUpSelected),
+      option(
+        'right',
+        _labelFor(chore, 'right'),
+        selected: primaryRightSelected,
+      ),
+      option('left', _labelFor(chore, 'left'), selected: primaryLeftSelected),
+      option('down', _labelFor(chore, 'down'), selected: primaryDownSelected),
+      option(
+        'center',
+        _labelFor(chore, 'center'),
+        selected: primaryCenterSelected,
+      ),
+    ];
 
-  void _updateFlickSelection(Offset currentGlobal) {
-    if (_startGlobalPosition == null) return;
-    final dx = currentGlobal.dx - _startGlobalPosition!.dx;
-    final dy = currentGlobal.dy - _startGlobalPosition!.dy;
-    const threshold = 20; // この閾値以上の移動で方向判定
-    String dir = 'center';
-    if (dx.abs() < threshold && dy.abs() < threshold) {
-      dir = 'center';
-    } else {
-      if (dx.abs() > dy.abs()) {
-        dir = dx > 0 ? 'right' : 'left';
-      } else {
-        dir = dy > 0 ? 'down' : 'up';
+    // 二次ステージなら、選んだ primary の周りにサブオプションを描画
+    if (_flickStage == 1 && _selectedPrimaryDir != null) {
+      final primaryMap = _choreActionMap[chore]?[_selectedPrimaryDir!];
+      final submenu = primaryMap != null
+          ? primaryMap['submenu'] as Map<String, dynamic>?
+          : null;
+      if (submenu != null) {
+        final secCenterOffset = _offsetForPrimary(_selectedPrimaryDir!, center);
+        submenu.forEach((secDir, secVal) {
+          final secSelected = _currentSecondary == secDir;
+          final left =
+              (secCenterOffset.dx +
+                      (secDir == 'left'
+                          ? -48
+                          : secDir == 'right'
+                          ? 48
+                          : 0))
+                  .clamp(0.0, size - itemSize);
+          final top =
+              (secCenterOffset.dy +
+                      (secDir == 'up'
+                          ? -48
+                          : secDir == 'down'
+                          ? 48
+                          : 0))
+                  .clamp(0.0, size - itemSize);
+          stack.add(
+            Positioned(
+              left: left,
+              top: top,
+              child: Container(
+                width: itemSize,
+                height: itemSize,
+                decoration: BoxDecoration(
+                  color: secSelected ? Colors.orangeAccent : Colors.white,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.black12),
+                ),
+                alignment: Alignment.center,
+                child: Tooltip(
+                  message: secVal['label']?.toString() ?? secDir,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                    child: Text(
+                      _shortLabel(secVal['label']?.toString() ?? secDir),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: secSelected ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        });
       }
     }
-    if (dir != _currentDirection) {
-      _currentDirection = dir;
-      // overlay を再描画
-      _overlayEntry?.markNeedsBuild();
+
+    return Stack(children: stack);
+  }
+
+  // primary 方向に対応するラベル（chore固有の一次ラベルがあれば優先）
+  String _labelFor(String chore, String dir) {
+    final map = _choreActionMap[chore];
+    if (map != null && map[dir] != null && map[dir]['label'] != null) {
+      return map[dir]['label'].toString();
     }
+    switch (dir) {
+      case 'up':
+        return '2部屋';
+      case 'right':
+        return '3部屋';
+      case 'left':
+        return '4部屋';
+      case 'down':
+        return '5以上';
+      case 'center':
+      default:
+        return '1部屋';
+    }
+  }
+
+  Offset _offsetForPrimary(String dir, double center) {
+    // center は size/2 - itemSize/2 を受け取る。返すは dx,dy。
+    final dx = dir == 'left'
+        ? center - 48
+        : dir == 'right'
+        ? center + 48
+        : center;
+    final dy = dir == 'up'
+        ? center - 48
+        : dir == 'down'
+        ? center + 48
+        : center;
+    return Offset(dx, dy);
+  }
+
+  String _shortLabel(String label) {
+    if (label.length <= 4) return label;
+    return label.substring(0, 4);
   }
 
   void _hideFlickMenu() {
