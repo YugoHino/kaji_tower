@@ -7,20 +7,8 @@ class ChoreLoggingScreen extends StatefulWidget {
   State<ChoreLoggingScreen> createState() => _ChoreLoggingScreenState();
 }
 
-class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
-  final List<String> _basicChores = [
-    '掃除',
-    'ご飯を作った',
-    'キッチン',
-    '洗面所',
-    '玄関の靴を揃えた',
-    '洗濯機を回した',
-    '洗濯物',
-    'ゴミ出し',
-    '買い物',
-    'ペットの世話',
-  ];
-
+class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
+    with TickerProviderStateMixin {
   OverlayEntry? _overlayEntry;
   Offset? _startGlobalPosition;
   Offset? _primaryOrigin;
@@ -39,7 +27,44 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
   // primary keys: 'center','up','right','left','down'
   // value: either {'label': '...'} or {'label': '...', 'submenu': { 'up': {...}, 'down': {...} ... }}
   final Map<String, Map<String, dynamic>> _choreActionMap = {
+    '掃除': {
+      'label': '掃除',
+      'count': 0,
+      'center': {'label': '1回分（既定）'},
+      'up': {'label': '部分掃除'},
+      'right': {'label': '掃除機'},
+      'left': {'label': '拭き掃除'},
+      'down': {'label': 'その他'},
+    },
+    'ご飯を作った': {
+      'label': 'ご飯を作った',
+      'count': 0,
+      'center': {'label': '1回分'},
+    },
+    'キッチン': {
+      'label': 'キッチン',
+      'count': 0,
+      'center': {'label': '1回分'},
+    },
+    '洗面所': {
+      'label': '洗面所',
+      'count': 0,
+      'center': {'label': '1回分'},
+    },
+    '玄関の靴を揃えた': {
+      'label': '玄関の靴を揃えた',
+      'count': 0,
+      'center': {'label': '1回分'},
+    },
+    '洗濯機を回した': {
+      'label': '洗濯機を回した',
+      'count': 0,
+      'center': {'label': '1回分'},
+    },
+    // 洗濯物は既にサブメニューを持つ例として定義
     '洗濯物': {
+      'label': '洗濯物',
+      'count': 0,
       'center': {'label': '1回分（既定）'},
       'right': {
         'label': '干した',
@@ -48,17 +73,25 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
           'down': {'count': 20, 'label': '20枚以上'},
         },
       },
-      'left': {'label': '畳んだ'}, // サブメニューなし
-      'up': {
-        'label': 'しまった',
-        'submenu': {
-          'right': {'count': 10, 'label': '8枚以上'},
-          'left': {'count': 20, 'label': '16枚以上'},
-        },
-      },
+      'left': {'label': '畳んだ'},
+      'up': {'label': 'しまった'},
       'down': {'label': 'その他'},
     },
-    // 他の家事はデフォルトの一次のみ（center/dirs -> label）
+    'ゴミ出し': {
+      'label': 'ゴミ出し',
+      'count': 0,
+      'center': {'label': '1回分'},
+    },
+    '買い物': {
+      'label': '買い物',
+      'count': 0,
+      'center': {'label': '1回分'},
+    },
+    'ペットの世話': {
+      'label': 'ペットの世話',
+      'count': 0,
+      'center': {'label': '1回分'},
+    },
   };
 
   @override
@@ -69,7 +102,8 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
         direction: Axis.horizontal,
         spacing: 8.0,
         runSpacing: 8.0,
-        children: _basicChores
+        // _choreActionMap のキーを使ってボタンを生成
+        children: _choreActionMap.keys
             .map((chore) => _buildChoreButton(chore))
             .toList(),
       ),
@@ -96,8 +130,8 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
         _handleFlickMove(details.globalPosition, chore);
       },
       onLongPressEnd: (details) {
-        // 確定処理
-        _finalizeFlick(chore);
+        // 確定処理（指の位置を渡して浮かび上がり表示）
+        _finalizeFlick(chore, details.globalPosition);
         _hideFlickMenu();
         _startGlobalPosition = null;
         _flickStage = 0;
@@ -205,7 +239,10 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
     return entry['submenu'] != null;
   }
 
-  void _finalizeFlick(String chore) {
+  void _finalizeFlick(String chore, Offset? globalPosition) {
+    int? finalCount;
+    String? finalLabel;
+
     // 二段階があれば二次選択を優先して処理
     if (_flickStage == 1 && _selectedPrimaryDir != null) {
       final primaryMap = _choreActionMap[chore]?[_selectedPrimaryDir!];
@@ -213,15 +250,22 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
         final submenu = Map<String, dynamic>.from(primaryMap['submenu']);
         final sec = submenu[_currentSecondary] ?? submenu['center'];
         if (sec != null) {
-          final label =
+          finalLabel =
               sec['label']?.toString() ??
               primaryMap['label']?.toString() ??
               chore;
-          final count = sec['count'] is int ? sec['count'] as int : null;
+          finalCount = sec['count'] is int ? sec['count'] as int : null;
+          // 浮かび上がり表示
+          if (globalPosition != null) {
+            final text = finalCount != null
+                ? (finalCount == 5 ? '+5以上' : '+$finalCount')
+                : '+1';
+            _showFloatingCount(globalPosition, text);
+          }
           _recordChore(
             chore,
-            count ?? _directionToCount(_selectedPrimaryDir!),
-            actionLabel: '${primaryMap['label']} → $label',
+            finalCount ?? _directionToCount(_selectedPrimaryDir!),
+            actionLabel: '${primaryMap['label']} → $finalLabel',
           );
           return;
         }
@@ -231,15 +275,27 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
     // 二段階でない場合やサブが無い場合は一次のみで処理
     final primaryLabel = _choreActionMap[chore]?[_currentPrimary]?['label'];
     if (primaryLabel != null) {
-      // 一次ラベルがあれば使う
+      finalCount = _directionToCount(_currentPrimary);
+      if (globalPosition != null) {
+        final text = (finalCount == 5) ? '+5以上' : '+$finalCount';
+        _showFloatingCount(globalPosition, text);
+      }
       _recordChore(
         chore,
-        _directionToCount(_currentPrimary),
+        primaryLabel != null
+            ? primaryLabel is int
+                  ? primaryLabel
+                  : finalCount
+            : finalCount,
         actionLabel: primaryLabel.toString(),
       );
     } else {
       // デフォルト: 一次方向から部屋数にマップ
       final count = _directionToCount(_currentPrimary);
+      if (globalPosition != null) {
+        final text = (count == 5) ? '+5以上' : '+$count';
+        _showFloatingCount(globalPosition, text);
+      }
       _recordChore(chore, count);
     }
   }
@@ -262,9 +318,109 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
 
   void _recordChore(String chore, int? count, {String? actionLabel}) {
     // 実際は DB や state 更新へ接続してください
+    // 各 chore ごとに独立した count を更新する
+    setState(() {
+      final entry = _choreActionMap[chore];
+      if (entry != null) {
+        final current = entry['count'] is int ? entry['count'] as int : 0;
+        final delta = count ?? 1;
+        entry['count'] = current + delta;
+      }
+    });
     final labelCount = (count == null) ? '' : (count == 5 ? '5以上' : '$count');
     final labelAction = actionLabel != null ? ' / $actionLabel' : '';
-    print('$chore を記録しました: $labelCount 部屋$labelAction');
+    print(
+      '$chore を記録しました: $labelCount $labelAction (total=${_choreActionMap[chore]?['count']})',
+    );
+  }
+
+  // フリック確定時に指の近くで浮かび上がるアニメーション表示
+  void _showFloatingCount(Offset globalPosition, String text) {
+    final overlay = Overlay.of(context);
+    if (overlay == null) return;
+
+    final controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 650),
+    );
+    final animation = CurvedAnimation(
+      parent: controller,
+      curve: Curves.easeOut,
+    );
+
+    OverlayEntry entry = OverlayEntry(
+      builder: (context) {
+        // アニメーション値 (0->1)
+        return AnimatedBuilder(
+          animation: animation,
+          builder: (context, child) {
+            final t = animation.value;
+            // 上に移動しながらフェードアウト
+            final dy = -40.0 * t;
+            final opacity = (1.0 - t).clamp(0.0, 1.0);
+            // Clamp position to screen
+            final screenW = MediaQuery.of(context).size.width;
+            final screenH = MediaQuery.of(context).size.height;
+            double left = globalPosition.dx - 20;
+            double top = globalPosition.dy - 20 + dy;
+            left = left.clamp(8.0, screenW - 64.0);
+            top = top.clamp(8.0, screenH - 64.0);
+            return Positioned(
+              left: left,
+              top: top,
+              child: Opacity(
+                opacity: opacity,
+                child: Transform.translate(
+                  offset: Offset(0, 0),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black87,
+                      borderRadius: BorderRadius.circular(8),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 6,
+                          offset: Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Text(
+                      text,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        shadows: [
+                          Shadow(
+                            color: Colors.black38,
+                            blurRadius: 2,
+                            offset: Offset(0, 1),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    overlay.insert(entry);
+    controller.forward();
+    controller.addStatusListener((status) {
+      if (status == AnimationStatus.completed ||
+          status == AnimationStatus.dismissed) {
+        entry.remove();
+        controller.dispose();
+      }
+    });
   }
 
   void _showFlickMenu(Offset globalPosition, String chore) {
