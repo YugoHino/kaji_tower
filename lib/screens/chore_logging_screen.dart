@@ -9,10 +9,8 @@ class ChoreLoggingScreen extends StatefulWidget {
 
 class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
   final List<String> _basicChores = [
-    '掃除機',
-    'トイレ掃除',
+    '掃除',
     'ご飯を作った',
-    '風呂掃除',
     'キッチン',
     '洗面所',
     '玄関の靴を揃えた',
@@ -27,6 +25,10 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
   Offset? _startGlobalPosition;
   Offset? _primaryOrigin;
   Offset? _secondaryOrigin;
+  // 判定用しきい値
+  static const double _primaryReturnRadius = 28.0; // 中心に戻ったと見なす距離
+  static const double _primarySwitchDistance = 56.0; // 別の一次方向へ切り替えるのに必要な距離
+
   // 2段階フリック用状態
   int _flickStage = 0; // 0 = primary, 1 = secondary
   String _currentPrimary = 'center';
@@ -44,11 +46,16 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
         'submenu': {
           'up': {'count': 10, 'label': '10枚以上'},
           'down': {'count': 20, 'label': '20枚以上'},
-          'center': {'count': 5, 'label': '5枚'},
         },
       },
       'left': {'label': '畳んだ'}, // サブメニューなし
-      'up': {'label': '移動した'},
+      'up': {
+        'label': 'しまった',
+        'submenu': {
+          'right': {'count': 10, 'label': '8枚以上'},
+          'left': {'count': 20, 'label': '16枚以上'},
+        },
+      },
       'down': {'label': 'その他'},
     },
     // 他の家事はデフォルトの一次のみ（center/dirs -> label）
@@ -112,7 +119,9 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
 
   void _handleFlickMove(Offset currentGlobal, String chore) {
     if (_flickStage == 0) {
-      final primaryDir = _calcDirection(_startGlobalPosition!, currentGlobal);
+      // primary 判定は possible primary origin（長押し開始）を優先して使う
+      final origin = _primaryOrigin ?? _startGlobalPosition!;
+      final primaryDir = _calcDirection(origin, currentGlobal);
       if (primaryDir != _currentPrimary) {
         _currentPrimary = primaryDir;
         // primary が submenu を持っていれば stage を 1 に遷移して基準をリセット
@@ -122,34 +131,51 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen> {
           _selectedPrimaryDir = primaryDir;
           // ここから二次フリックを測るため、secondary origin を今の位置にリセット
           _secondaryOrigin = currentGlobal;
-          // keep primaryOrigin (long press start) so we can detect returning to primary
-          _startGlobalPosition =
-              _secondaryOrigin; // maintain compatibility where startGlobalPosition is used
-
+          // primaryOrigin は保持（戻る判定のため）
+          // 二次判定用に startGlobalPosition を secondaryOrigin に合わせておく
+          _startGlobalPosition = _secondaryOrigin;
           _currentSecondary = 'center';
+        } else {
+          // 二次オフセットが残っていたらクリア（一次に留まる場合）
+          _secondaryOrigin = null;
         }
         _overlayEntry?.markNeedsBuild();
       }
     } else {
-      // stage == 1 : secondary の判定
-      // 設定: secondary 判断は secondaryOrigin を基準に行う
+      // stage == 1 : secondary の判定（secondaryOrigin を基準）
       final secOrigin = _secondaryOrigin ?? _startGlobalPosition!;
       final secondaryDir = _calcDirection(secOrigin, currentGlobal);
 
-      // 追加: currentGlobal が再び一次起点（primaryOrigin）側へ移動した場合は一次に戻す
+      // 改良: currentGlobal が再び一次起点（primaryOrigin）側へ移動した場合は一次に戻す判定を厳しくする
       if (_primaryOrigin != null) {
+        final vecFromPrimary = currentGlobal - _primaryOrigin!;
+        final distFromPrimary = vecFromPrimary.distance;
+
+        // 1) 明確に中心に戻った（小さい距離） -> 一次に戻す
+        if (distFromPrimary <= _primaryReturnRadius) {
+          _flickStage = 0;
+          _currentPrimary = 'center';
+          _selectedPrimaryDir = null;
+          _secondaryOrigin = null;
+          _currentSecondary = 'center';
+          _startGlobalPosition = _primaryOrigin;
+          _overlayEntry?.markNeedsBuild();
+          return;
+        }
+
+        // 2) 十分に離れていて、一次方向が明確に変わった（かつ距離がある）場合のみ一次切替を許可
         final primaryFromPrimaryOrigin = _calcDirection(
           _primaryOrigin!,
           currentGlobal,
         );
-        // primary が center または 別の一次方向に変わったら一次ステージに戻す
-        if (primaryFromPrimaryOrigin == 'center' ||
-            primaryFromPrimaryOrigin != _selectedPrimaryDir) {
+        if (primaryFromPrimaryOrigin != _selectedPrimaryDir &&
+            distFromPrimary >= _primarySwitchDistance) {
           _flickStage = 0;
           _currentPrimary = primaryFromPrimaryOrigin;
           _selectedPrimaryDir = null;
           _secondaryOrigin = null;
           _currentSecondary = 'center';
+          _startGlobalPosition = _primaryOrigin;
           _overlayEntry?.markNeedsBuild();
           return;
         }
