@@ -1,10 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
 import 'package:kaji_tower/screens/chore_logging_screen.dart';
 import 'package:kaji_tower/screens/apartment_screen.dart';
 import 'package:kaji_tower/screens/settings_screen.dart';
+import 'package:kaji_tower/models/chore_store.dart';
 
 void main() {
-  runApp(const KajiTowerApp());
+  runApp(
+    ChangeNotifierProvider.value(
+      value: ChoreStore.instance,
+      child: const KajiTowerApp(),
+    ),
+  );
 }
 
 class KajiTowerApp extends StatelessWidget {
@@ -36,6 +44,7 @@ class _HomeScreenState extends State<HomeScreen> {
   static final List<Widget> _widgetOptions = <Widget>[
     const ChoreLoggingScreen(),
     const ApartmentScreen(),
+    // SettingsScreen may depend on your implementation
     const SettingsScreen(),
   ];
 
@@ -48,26 +57,16 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('家事タワー'),
-      ),
-      body: Center(
-        child: _widgetOptions.elementAt(_selectedIndex),
-      ),
+      appBar: AppBar(title: const Text('家事タワー')),
+      body: Center(child: _widgetOptions.elementAt(_selectedIndex)),
       bottomNavigationBar: BottomNavigationBar(
         items: const <BottomNavigationBarItem>[
           BottomNavigationBarItem(
             icon: Icon(Icons.check_circle_outline),
             label: '家事記録',
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.apartment),
-            label: 'マンション',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.settings),
-            label: '設定',
-          ),
+          BottomNavigationBarItem(icon: Icon(Icons.apartment), label: 'マンション'),
+          BottomNavigationBarItem(icon: Icon(Icons.settings), label: '設定'),
         ],
         currentIndex: _selectedIndex,
         onTap: _onItemTapped,

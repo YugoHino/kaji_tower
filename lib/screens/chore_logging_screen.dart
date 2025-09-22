@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../models/chore_store.dart';
 
 class ChoreLoggingScreen extends StatefulWidget {
   const ChoreLoggingScreen({super.key});
@@ -14,8 +16,8 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   Offset? _primaryOrigin;
   Offset? _secondaryOrigin;
   // 判定用しきい値
-  static const double _primaryReturnRadius = 28.0; // 中心に戻ったと見なす距離
-  static const double _primarySwitchDistance = 56.0; // 別の一次方向へ切り替えるのに必要な距離
+  static const double _primaryReturnRadius = 28.0;
+  static const double _primarySwitchDistance = 56.0;
 
   // 2段階フリック用状態
   int _flickStage = 0; // 0 = primary, 1 = secondary
@@ -23,9 +25,8 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   String _currentSecondary = 'center';
   String? _selectedPrimaryDir; // primaryで選ばれ、submenuがある場合にセット
 
-  // chore-specific action mapping (例として "洗濯物" に二段目を用意)
-  // primary keys: 'center','up','right','left','down'
-  // value: either {'label': '...'} or {'label': '...', 'submenu': { 'up': {...}, 'down': {...} ... }}
+  // 各 chore をキーにして個別カウントやアクション定義をまとめる
+  // 'count' が各家事の独立した累積値になります。
   final Map<String, Map<String, dynamic>> _choreActionMap = {
     '掃除': {
       'label': '掃除',
@@ -56,12 +57,7 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
       'count': 0,
       'center': {'label': '1回分'},
     },
-    '洗濯機を回した': {
-      'label': '洗濯機を回した',
-      'count': 0,
-      'center': {'label': '1回分'},
-    },
-    // 洗濯物は既にサブメニューを持つ例として定義
+    // 洗濯物はサブメニューの例
     '洗濯物': {
       'label': '洗濯物',
       'count': 0,
@@ -71,11 +67,17 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
         'submenu': {
           'up': {'count': 10, 'label': '10枚以上'},
           'down': {'count': 20, 'label': '20枚以上'},
+          'center': {'count': 5, 'label': '5枚'},
         },
       },
       'left': {'label': '畳んだ'},
       'up': {'label': 'しまった'},
       'down': {'label': 'その他'},
+    },
+    '洗濯機を回した': {
+      'label': '洗濯機を回した',
+      'count': 0,
+      'center': {'label': '1回分'},
     },
     'ゴミ出し': {
       'label': 'ゴミ出し',
@@ -102,7 +104,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
         direction: Axis.horizontal,
         spacing: 8.0,
         runSpacing: 8.0,
-        // _choreActionMap のキーを使ってボタンを生成
         children: _choreActionMap.keys
             .map((chore) => _buildChoreButton(chore))
             .toList(),
@@ -111,10 +112,10 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   }
 
   Widget _buildChoreButton(String chore) {
+    final count = _choreActionMap[chore]?['count'] ?? 0;
     return GestureDetector(
       onTap: () {
-        // 短押しは1部屋（もしくはデフォルト動作）
-        _recordChore(chore, 1, actionLabel: 'short tap');
+        _recordChore(chore, 1, actionLabel: 'tap');
       },
       onLongPressStart: (details) {
         _primaryOrigin = details.globalPosition;
@@ -130,7 +131,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
         _handleFlickMove(details.globalPosition, chore);
       },
       onLongPressEnd: (details) {
-        // 確定処理（指の位置を渡して浮かび上がり表示）
         _finalizeFlick(chore, details.globalPosition);
         _hideFlickMenu();
         _startGlobalPosition = null;
@@ -146,46 +146,47 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
         style: ElevatedButton.styleFrom(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         ),
-        child: Text(chore),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(chore),
+            const SizedBox(height: 4),
+            Text(
+              '${count}',
+              style: const TextStyle(fontSize: 12, color: Colors.white70),
+            ),
+          ],
+        ),
       ),
     );
   }
 
   void _handleFlickMove(Offset currentGlobal, String chore) {
     if (_flickStage == 0) {
-      // primary 判定は possible primary origin（長押し開始）を優先して使う
       final origin = _primaryOrigin ?? _startGlobalPosition!;
       final primaryDir = _calcDirection(origin, currentGlobal);
       if (primaryDir != _currentPrimary) {
         _currentPrimary = primaryDir;
-        // primary が submenu を持っていれば stage を 1 に遷移して基準をリセット
         final primaryHasSub = _hasSubmenu(chore, primaryDir);
         if (primaryHasSub && primaryDir != 'center') {
           _flickStage = 1;
           _selectedPrimaryDir = primaryDir;
-          // ここから二次フリックを測るため、secondary origin を今の位置にリセット
           _secondaryOrigin = currentGlobal;
-          // primaryOrigin は保持（戻る判定のため）
-          // 二次判定用に startGlobalPosition を secondaryOrigin に合わせておく
           _startGlobalPosition = _secondaryOrigin;
           _currentSecondary = 'center';
         } else {
-          // 二次オフセットが残っていたらクリア（一次に留まる場合）
           _secondaryOrigin = null;
         }
         _overlayEntry?.markNeedsBuild();
       }
     } else {
-      // stage == 1 : secondary の判定（secondaryOrigin を基準）
       final secOrigin = _secondaryOrigin ?? _startGlobalPosition!;
       final secondaryDir = _calcDirection(secOrigin, currentGlobal);
 
-      // 改良: currentGlobal が再び一次起点（primaryOrigin）側へ移動した場合は一次に戻す判定を厳しくする
       if (_primaryOrigin != null) {
         final vecFromPrimary = currentGlobal - _primaryOrigin!;
         final distFromPrimary = vecFromPrimary.distance;
 
-        // 1) 明確に中心に戻った（小さい距離） -> 一次に戻す
         if (distFromPrimary <= _primaryReturnRadius) {
           _flickStage = 0;
           _currentPrimary = 'center';
@@ -197,7 +198,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
           return;
         }
 
-        // 2) 十分に離れていて、一次方向が明確に変わった（かつ距離がある）場合のみ一次切替を許可
         final primaryFromPrimaryOrigin = _calcDirection(
           _primaryOrigin!,
           currentGlobal,
@@ -243,7 +243,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
     int? finalCount;
     String? finalLabel;
 
-    // 二段階があれば二次選択を優先して処理
     if (_flickStage == 1 && _selectedPrimaryDir != null) {
       final primaryMap = _choreActionMap[chore]?[_selectedPrimaryDir!];
       if (primaryMap != null && primaryMap['submenu'] != null) {
@@ -255,7 +254,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
               primaryMap['label']?.toString() ??
               chore;
           finalCount = sec['count'] is int ? sec['count'] as int : null;
-          // 浮かび上がり表示
           if (globalPosition != null) {
             final text = finalCount != null
                 ? (finalCount == 5 ? '+5以上' : '+$finalCount')
@@ -272,7 +270,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
       }
     }
 
-    // 二段階でない場合やサブが無い場合は一次のみで処理
     final primaryLabel = _choreActionMap[chore]?[_currentPrimary]?['label'];
     if (primaryLabel != null) {
       finalCount = _directionToCount(_currentPrimary);
@@ -280,17 +277,8 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
         final text = (finalCount == 5) ? '+5以上' : '+$finalCount';
         _showFloatingCount(globalPosition, text);
       }
-      _recordChore(
-        chore,
-        primaryLabel != null
-            ? primaryLabel is int
-                  ? primaryLabel
-                  : finalCount
-            : finalCount,
-        actionLabel: primaryLabel.toString(),
-      );
+      _recordChore(chore, finalCount, actionLabel: primaryLabel.toString());
     } else {
-      // デフォルト: 一次方向から部屋数にマップ
       final count = _directionToCount(_currentPrimary);
       if (globalPosition != null) {
         final text = (count == 5) ? '+5以上' : '+$count';
@@ -317,20 +305,24 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   }
 
   void _recordChore(String chore, int? count, {String? actionLabel}) {
-    // 実際は DB や state 更新へ接続してください
-    // 各 chore ごとに独立した count を更新する
+    final delta = count ?? 1;
     setState(() {
       final entry = _choreActionMap[chore];
       if (entry != null) {
         final current = entry['count'] is int ? entry['count'] as int : 0;
-        final delta = count ?? 1;
         entry['count'] = current + delta;
       }
     });
+
+    // Provider 経由でグローバルに蓄積
+    context.read<ChoreStore>().increment(chore, delta);
+
     final labelCount = (count == null) ? '' : (count == 5 ? '5以上' : '$count');
     final labelAction = actionLabel != null ? ' / $actionLabel' : '';
+    // デバッグ用ログ
+    // ignore: avoid_print
     print(
-      '$chore を記録しました: $labelCount $labelAction (total=${_choreActionMap[chore]?['count']})',
+      '$chore を記録しました: $labelCount$labelAction (local=${_choreActionMap[chore]?['count']}, global=${context.read<ChoreStore>().getCount(chore)})',
     );
   }
 
@@ -350,15 +342,12 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
 
     OverlayEntry entry = OverlayEntry(
       builder: (context) {
-        // アニメーション値 (0->1)
         return AnimatedBuilder(
           animation: animation,
           builder: (context, child) {
             final t = animation.value;
-            // 上に移動しながらフェードアウト
             final dy = -40.0 * t;
             final opacity = (1.0 - t).clamp(0.0, 1.0);
-            // Clamp position to screen
             final screenW = MediaQuery.of(context).size.width;
             final screenH = MediaQuery.of(context).size.height;
             double left = globalPosition.dx - 20;
@@ -370,38 +359,28 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
               top: top,
               child: Opacity(
                 opacity: opacity,
-                child: Transform.translate(
-                  offset: Offset(0, 0),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black87,
-                      borderRadius: BorderRadius.circular(8),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 6,
-                          offset: Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Text(
-                      text,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        shadows: [
-                          Shadow(
-                            color: Colors.black38,
-                            blurRadius: 2,
-                            offset: Offset(0, 1),
-                          ),
-                        ],
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Colors.black26,
+                        blurRadius: 6,
+                        offset: Offset(0, 2),
                       ),
+                    ],
+                  ),
+                  child: Text(
+                    text,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
                 ),
@@ -439,7 +418,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
             color: Colors.transparent,
             child: StatefulBuilder(
               builder: (context, setStateOverlay) {
-                // Overlay 内での描画は親 State のプロパティを参照する（markNeedsBuildで更新）
                 return _buildFlickMenuContent(size, chore);
               },
             ),
@@ -474,7 +452,7 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
             shape: BoxShape.circle,
             border: Border.all(color: Colors.black12),
             boxShadow: selected
-                ? [
+                ? const [
                     BoxShadow(
                       color: Colors.black26,
                       blurRadius: 4,
@@ -503,7 +481,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
       );
     }
 
-    // Primary options
     final primaryUpSelected = _currentPrimary == 'up' && _flickStage == 0;
     final primaryRightSelected = _currentPrimary == 'right' && _flickStage == 0;
     final primaryLeftSelected = _currentPrimary == 'left' && _flickStage == 0;
@@ -537,7 +514,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
       ),
     ];
 
-    // 二次ステージなら、選んだ primary の周りにサブオプションを描画
     if (_flickStage == 1 && _selectedPrimaryDir != null) {
       final primaryMap = _choreActionMap[chore]?[_selectedPrimaryDir!];
       final submenu = primaryMap != null
@@ -600,7 +576,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
     return Stack(children: stack);
   }
 
-  // primary 方向に対応するラベル（chore固有の一次ラベルがあれば優先）
   String _labelFor(String chore, String dir) {
     final map = _choreActionMap[chore];
     if (map != null && map[dir] != null && map[dir]['label'] != null) {
@@ -622,7 +597,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   }
 
   Offset _offsetForPrimary(String dir, double center) {
-    // center は size/2 - itemSize/2 を受け取る。返すは dx,dy。
     final dx = dir == 'left'
         ? center - 48
         : dir == 'right'
