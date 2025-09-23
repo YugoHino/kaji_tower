@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/chore_store.dart';
 
 class ChoreLoggingScreen extends StatefulWidget {
@@ -16,6 +19,13 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   Offset? _primaryOrigin;
 
   String _currentPrimary = 'center';
+
+  // record persistence key
+  static const String _prefsKey = 'chore_logs_v1';
+
+  // persisted records: each record is a map with keys:
+  // { 'ts': int(millisecondsSinceEpoch), 'chore': String, 'dir': String?, 'count': int, 'label': String? }
+  final List<Map<String, dynamic>> _records = [];
 
   // 各 chore をキーにして個別カウントやアクション定義をまとめる
   // 必須キー: label, up, right, left, down.
@@ -112,16 +122,271 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   final Map<String, DateTime> _lastPerformed = {};
 
   @override
+  void initState() {
+    super.initState();
+    _loadRecords();
+  }
+
+  Future<void> _loadRecords() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList(_prefsKey) ?? <String>[];
+    _records.clear();
+    for (var s in list) {
+      try {
+        final m = json.decode(s) as Map<String, dynamic>;
+        _records.add(m);
+      } catch (_) {
+        // ignore malformed
+      }
+    }
+    _rebuildCountsFromRecords();
+    _rebuildLastPerformedFromRecords();
+    setState(() {});
+  }
+
+  Future<void> _persistRecords() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = _records.map((m) => json.encode(m)).toList();
+    await prefs.setStringList(_prefsKey, list);
+  }
+
+  void _rebuildCountsFromRecords() {
+    // reset counts in local choreActionMap
+    for (final k in _choreActionMap.keys) {
+      // keep the original base label, but reset displayed count to 0
+      final entry = _choreActionMap[k];
+      if (entry != null) {
+        entry['count'] = 0;
+      }
+    }
+    for (final r in _records) {
+      final chore = r['chore'] as String?;
+      final cnt = (r['count'] is int)
+          ? r['count'] as int
+          : int.tryParse('${r['count']}') ?? 0;
+      if (chore != null && _choreActionMap.containsKey(chore)) {
+        final entry = _choreActionMap[chore];
+        if (entry != null) {
+          final current = entry['count'] is int ? entry['count'] as int : 0;
+          entry['count'] = current + cnt;
+        }
+      }
+    }
+  }
+
+  void _rebuildLastPerformedFromRecords() {
+    _lastPerformed.clear();
+    for (final r in _records) {
+      final chore = r['chore'] as String?;
+      final dir = r['dir'] as String?;
+      final ts = r['ts'] is int
+          ? r['ts'] as int
+          : int.tryParse('${r['ts']}') ?? 0;
+      if (chore != null && dir != null) {
+        final cd = _cooldownMinutes(chore, dir);
+        if (cd != null && cd > 0) {
+          final key = '$chore|$dir';
+          final dt = DateTime.fromMillisecondsSinceEpoch(ts);
+          final prev = _lastPerformed[key];
+          if (prev == null || dt.isAfter(prev)) {
+            _lastPerformed[key] = dt;
+          }
+        }
+      }
+    }
+  }
+
+  DateTime _todayMidnight() {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day);
+  }
+
+  int _todayTotalPoints() {
+    final mid = _todayMidnight();
+    var sum = 0;
+    for (final r in _records) {
+      final ts = r['ts'] is int
+          ? r['ts'] as int
+          : int.tryParse('${r['ts']}') ?? 0;
+      final dt = DateTime.fromMillisecondsSinceEpoch(ts);
+      if (!dt.isBefore(mid)) {
+        final cnt = (r['count'] is int)
+            ? r['count'] as int
+            : int.tryParse('${r['count']}') ?? 0;
+        sum += cnt;
+      }
+    }
+    return sum;
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16.0),
-      child: Wrap(
-        direction: Axis.horizontal,
-        spacing: 8.0,
-        runSpacing: 8.0,
-        children: _choreActionMap.keys
-            .map((chore) => _buildChoreButton(chore))
-            .toList(),
+    // top-right display + main buttons + bottom log list
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            // header: today's total on the right
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12.0,
+                vertical: 8.0,
+              ),
+              child: Row(
+                children: [
+                  const Spacer(),
+                  Text(
+                    '本日の獲得ポイント：${_todayTotalPoints()} p',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // main button area
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16.0),
+                child: Wrap(
+                  direction: Axis.horizontal,
+                  spacing: 8.0,
+                  runSpacing: 8.0,
+                  children: _choreActionMap.keys
+                      .map((chore) => _buildChoreButton(chore))
+                      .toList(),
+                ),
+              ),
+            ),
+            // bottom logs: fixed height showing ~5 rows, vertically scrollable
+            Container(
+              height: 280, // 約5行分（調整可）
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                border: Border(top: BorderSide(color: Colors.grey.shade300)),
+              ),
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12.0,
+                      vertical: 8.0,
+                    ),
+                    child: Row(
+                      children: [
+                        const Text(
+                          '履歴',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.delete_forever, size: 20),
+                          tooltip: '全件削除',
+                          onPressed: _records.isEmpty
+                              ? null
+                              : () async {
+                                  final ok = await showDialog<bool>(
+                                    context: context,
+                                    builder: (ctx) => AlertDialog(
+                                      title: const Text('全ての履歴を削除しますか？'),
+                                      content: const Text(
+                                        'この操作は取り消せません。よろしいですか？',
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.of(ctx).pop(false),
+                                          child: const Text('キャンセル'),
+                                        ),
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.of(ctx).pop(true),
+                                          child: const Text('削除'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                  if (ok == true) {
+                                    _records.clear();
+                                    await _persistRecords();
+                                    _rebuildCountsFromRecords();
+                                    _rebuildLastPerformedFromRecords();
+                                    setState(() {});
+                                  }
+                                },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: _records.isEmpty
+                        ? const Center(child: Text('まだ記録がありません'))
+                        : ListView.builder(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            itemCount: _records.length,
+                            itemBuilder: (context, idx) {
+                              // show newest first
+                              final i = _records.length - 1 - idx;
+                              final r = _records[i];
+                              final ts = r['ts'] is int
+                                  ? r['ts'] as int
+                                  : int.tryParse('${r['ts']}') ?? 0;
+                              final dt = DateTime.fromMillisecondsSinceEpoch(
+                                ts,
+                              );
+                              final hh = dt.hour.toString().padLeft(2, '0');
+                              final mm = dt.minute.toString().padLeft(2, '0');
+                              final timeText = '$hh:$mm';
+                              final chore = r['chore']?.toString() ?? '';
+                              final cnt = r['count'] is int
+                                  ? r['count'] as int
+                                  : int.tryParse('${r['count']}') ?? 0;
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12.0,
+                                  vertical: 6.0,
+                                ),
+                                child: Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 64,
+                                      child: Text(
+                                        timeText,
+                                        style: const TextStyle(
+                                          color: Colors.black54,
+                                        ),
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: Text(
+                                        '$chore',
+                                        style: const TextStyle(fontSize: 14),
+                                      ),
+                                    ),
+                                    Text(
+                                      '+$cnt p',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    IconButton(
+                                      icon: const Icon(Icons.close, size: 20),
+                                      onPressed: () => _confirmDeleteRecord(i),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -129,10 +394,7 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   Widget _buildChoreButton(String chore) {
     final count = _choreActionMap[chore]?['count'] ?? 0;
     return GestureDetector(
-      onTap: () {
-        // 短押しは従来どおり 1 カウント（必要なら挙動変更可）
-        _recordChore(chore, 1, actionLabel: 'tap');
-      },
+      onTap: null,
       onLongPressStart: (details) {
         _primaryOrigin = details.globalPosition;
         _startGlobalPosition = details.globalPosition;
@@ -265,8 +527,19 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
     int? count, {
     String? actionLabel,
     String? dir,
-  }) {
+  }) async {
     final delta = count ?? 1;
+
+    // persist record
+    final rec = <String, dynamic>{
+      'ts': DateTime.now().millisecondsSinceEpoch,
+      'chore': chore,
+      'dir': dir,
+      'count': delta,
+      'label': actionLabel,
+    };
+    _records.add(rec);
+    await _persistRecords();
 
     // ローカル表示更新
     setState(() {
@@ -295,9 +568,10 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
     print(
       '$chore を記録しました: +$delta ${actionLabel ?? ''} (local=${_choreActionMap[chore]?['count']}, global=${context.read<ChoreStore>().getCount(chore)})',
     );
+    setState(() {}); // update header total and logs
   }
 
-  // フリック確定時に指の近くで浮かび上がるアニメーション表示
+  // ...existing code...
   void _showFloatingCount(Offset globalPosition, String text) {
     final overlay = Overlay.of(context);
     if (overlay == null) return;
@@ -586,5 +860,35 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   void _hideFlickMenu() {
     _overlayEntry?.remove();
     _overlayEntry = null;
+  }
+
+  Future<void> _confirmDeleteRecord(int index) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('削除確認'),
+        content: const Text('この記録を削除しますか？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('削除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    // delete and rebuild counts/cooldowns
+    if (index >= 0 && index < _records.length) {
+      _records.removeAt(index);
+      await _persistRecords();
+      _rebuildCountsFromRecords();
+      _rebuildLastPerformedFromRecords();
+      setState(() {});
+      _overlayEntry?.markNeedsBuild();
+    }
   }
 }

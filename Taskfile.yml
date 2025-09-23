@@ -12,13 +12,21 @@ tasks:
       - flutter run -d macos
     desc: Run the app in development mode
   add:
+    desc: "Add a new dependency. Usage: task add -- <package_name>"
     cmds:
-      - flutter pub add {{.ARGUMENTS}}
-    desc: Add a new dependency to pubspec.yaml
+      - flutter pub add {{.CLI_ARGS}}
+    # 引数が空でないかチェックする設定
+    preconditions:
+      - sh: 'test -n "{{.CLI_ARGS}}"'
+        msg: "Please provide a package name to add."
   remove:
+    desc: "Remove a dependency. Usage: task remove <package_name>"
     cmds:
-      - flutter pub remove {{.ARGUMENTS}}
-    desc: Remove a dependency from pubspec.yaml
+      - flutter pub remove {{.CLI_ARGS}}
+    # 引数が空でないかチェックする設定
+    preconditions:
+      - sh: 'test -n "{{.CLI_ARGS}}"'
+        msg: "Please provide a package name to remove."
   build:
     cmds:
       - flutter build macos --release
