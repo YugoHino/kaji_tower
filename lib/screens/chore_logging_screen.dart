@@ -261,7 +261,7 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
             ),
             // bottom logs: fixed height showing ~5 rows, vertically scrollable
             Container(
-              height: 280, // 約5行分（調整可）
+              height: 200, // 約5行分（調整可）
               decoration: BoxDecoration(
                 color: Colors.grey.shade50,
                 border: Border(top: BorderSide(color: Colors.grey.shade300)),
@@ -340,6 +340,11 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
                               final mm = dt.minute.toString().padLeft(2, '0');
                               final timeText = '$hh:$mm';
                               final chore = r['chore']?.toString() ?? '';
+                              final actionLabel = r['label']?.toString() ?? '';
+                              final displayText = actionLabel.isNotEmpty
+                                  ? '$chore : $actionLabel'
+                                  : chore;
+
                               final cnt = r['count'] is int
                                   ? r['count'] as int
                                   : int.tryParse('${r['count']}') ?? 0;
@@ -361,7 +366,7 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
                                     ),
                                     Expanded(
                                       child: Text(
-                                        '$chore',
+                                        displayText,
                                         style: const TextStyle(fontSize: 14),
                                       ),
                                     ),
