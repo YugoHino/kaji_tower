@@ -11,3 +11,19 @@ tasks:
     cmds:
       - flutter run -d macos
     desc: Run the app in development mode
+  add:
+    cmds:
+      - flutter pub add {{.ARGUMENTS}}
+    desc: Add a new dependency to pubspec.yaml
+  remove:
+    cmds:
+      - flutter pub remove {{.ARGUMENTS}}
+    desc: Remove a dependency from pubspec.yaml
+  build:
+    cmds:
+      - flutter build macos --release
+    desc: Build the app for release
+  test:
+    cmds:
+      - flutter test
+    desc: Run all tests

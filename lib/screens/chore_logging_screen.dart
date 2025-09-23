@@ -14,20 +14,13 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   OverlayEntry? _overlayEntry;
   Offset? _startGlobalPosition;
   Offset? _primaryOrigin;
-  Offset? _secondaryOrigin;
-  // 判定用しきい値
-  static const double _primaryReturnRadius = 28.0;
-  static const double _primarySwitchDistance = 56.0;
 
-  // 2段階フリック用状態（現在はサブメニューなし）
-  int _flickStage = 0; // 0 = primary
   String _currentPrimary = 'center';
-  String _currentSecondary = 'center';
-  String? _selectedPrimaryDir;
 
   // 各 chore をキーにして個別カウントやアクション定義をまとめる
-  // 必須キー: label, up, right, left, down. 各方向オブジェクトは { 'label': '...', 'count': n } とする。
-  // center は存在してもよいが、center 選択ではカウントアップしない。
+  // 必須キー: label, up, right, left, down.
+  // 各方向オブジェクトは { 'label': '...', 'count': n, optional 'cooldownMinutes': m } とする。
+  // center は表示されないため定義していない。
   final Map<String, Map<String, dynamic>> _choreActionMap = {
     '掃除': {
       'label': '掃除',
@@ -49,7 +42,11 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
       'label': 'キッチン',
 
       'up': {'label': '部分清掃', 'count': 2},
-      'right': {'label': 'シンク掃除', 'count': 3},
+      'right': {
+        'label': 'シンク掃除',
+        'count': 3,
+        'cooldownMinutes': 180,
+      }, // 3時間のクールダウン（例）
       'left': {'label': '床拭き', 'count': 4},
       'down': {'label': 'その他', 'count': 5},
     },
@@ -111,6 +108,9 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
     },
   };
 
+  // 最後に実行した時刻を保持する（キー: 'chore|dir'）
+  final Map<String, DateTime> _lastPerformed = {};
+
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
@@ -136,10 +136,7 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
       onLongPressStart: (details) {
         _primaryOrigin = details.globalPosition;
         _startGlobalPosition = details.globalPosition;
-        _flickStage = 0;
         _currentPrimary = 'center';
-        _currentSecondary = 'center';
-        _selectedPrimaryDir = null;
         _showFlickMenu(details.globalPosition, chore);
       },
       onLongPressMoveUpdate: (details) {
@@ -150,12 +147,8 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
         _finalizeFlick(chore, details.globalPosition);
         _hideFlickMenu();
         _startGlobalPosition = null;
-        _flickStage = 0;
         _currentPrimary = 'center';
-        _currentSecondary = 'center';
-        _selectedPrimaryDir = null;
         _primaryOrigin = null;
-        _secondaryOrigin = null;
       },
       child: ElevatedButton(
         onPressed: null,
@@ -178,7 +171,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   }
 
   void _handleFlickMove(Offset currentGlobal, String chore) {
-    // サブメニューは廃止したので一次判定のみ（center/up/right/left/down）
     final origin = _primaryOrigin ?? _startGlobalPosition!;
     final primaryDir = _calcDirection(origin, currentGlobal);
     if (primaryDir != _currentPrimary) {
@@ -196,36 +188,87 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
     return dy > 0 ? 'down' : 'up';
   }
 
+  // cooldown utilities
+  int? _cooldownMinutes(String chore, String dir) {
+    final entry = _choreActionMap[chore]?[dir];
+    if (entry == null) return null;
+    final v = entry['cooldownMinutes'];
+    return v is int ? v : null;
+  }
+
+  Duration? _remainingCooldown(String chore, String dir) {
+    final minutes = _cooldownMinutes(chore, dir);
+    if (minutes == null) return null;
+    final key = '$chore|$dir';
+    final last = _lastPerformed[key];
+    if (last == null) return null;
+    final expiry = last.add(Duration(minutes: minutes));
+    final now = DateTime.now();
+    if (expiry.isAfter(now)) return expiry.difference(now);
+    return null;
+  }
+
+  bool _isOnCooldown(String chore, String dir) {
+    return _remainingCooldown(chore, dir) != null;
+  }
+
+  String _formatRemaining(Duration d) {
+    final minutes = d.inMinutes;
+    if (minutes < 60) return '${minutes}分後に解放';
+    final hours = minutes ~/ 60;
+    final remMin = minutes % 60;
+    if (remMin == 0) return '${hours}時間後に解放';
+    return '${hours}時間${remMin}分後に解放';
+  }
+
   void _finalizeFlick(String chore, Offset? globalPosition) {
     final dir = _currentPrimary;
-    // center はカウントアップしない
     if (dir == 'center') {
-      // 必要ならここで別の UI を出す（例: ラベル表示） — 今は何もしない
       return;
     }
 
-    // マップから指定方向の count を取得（必須）
+    // 指定方向のエントリと count を取得（必須）
     final dirEntry = _choreActionMap[chore]?[dir];
     final dirCount = (dirEntry != null && dirEntry['count'] is int)
         ? dirEntry['count'] as int
         : null;
 
     if (dirCount == null) {
-      // 指定方向に count が無い場合は無視
       return;
     }
 
-    // アニメ表示
+    // cooldown 判定
+    final remaining = _remainingCooldown(chore, dir);
+    if (remaining != null) {
+      // クールダウン中は「ポップアップ（浮かび上がるメッセージ）」を出さない。
+      // 代わりにオーバーレイを再描画してグレー表示＋残り時間をオプション上に表示する。
+      _overlayEntry?.markNeedsBuild();
+      return; // カウントは加算しない
+    }
+
+    // 通常はアニメ表示してカウント増加
     if (globalPosition != null) {
       final text = dirCount == 5 ? '+5以上' : '+$dirCount';
       _showFloatingCount(globalPosition, text);
     }
 
-    _recordChore(chore, dirCount, actionLabel: dirEntry['label']?.toString());
+    _recordChore(
+      chore,
+      dirCount,
+      actionLabel: dirEntry['label']?.toString(),
+      dir: dir,
+    );
   }
 
-  void _recordChore(String chore, int? count, {String? actionLabel}) {
+  void _recordChore(
+    String chore,
+    int? count, {
+    String? actionLabel,
+    String? dir,
+  }) {
     final delta = count ?? 1;
+
+    // ローカル表示更新
     setState(() {
       final entry = _choreActionMap[chore];
       if (entry != null) {
@@ -236,6 +279,17 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
 
     // Provider 経由でグローバルに蓄積
     context.read<ChoreStore>().increment(chore, delta);
+
+    // cooldown が設定されていれば lastPerformed を更新して以降の入力をロック
+    if (dir != null) {
+      final cd = _cooldownMinutes(chore, dir);
+      if (cd != null && cd > 0) {
+        final key = '$chore|$dir';
+        _lastPerformed[key] = DateTime.now();
+        // overlay の再描画で灰色表示する
+        _overlayEntry?.markNeedsBuild();
+      }
+    }
 
     // ignore: avoid_print
     print(
@@ -323,7 +377,7 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
     _overlayEntry?.remove();
     _overlayEntry = OverlayEntry(
       builder: (context) {
-        const double size = 140;
+        const double size = 160;
         final left = globalPosition.dx - size / 2;
         final top = globalPosition.dy - size / 2;
         return Positioned(
@@ -346,59 +400,9 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   }
 
   Widget _buildFlickMenuContent(double size, String chore) {
-    final itemSize = 44.0;
+    final itemSize = 54.0;
     final center = size / 2 - itemSize / 2;
 
-    Widget option(String dir, String label, {bool selected = false}) {
-      return Positioned(
-        left: dir == 'left'
-            ? center - 48
-            : dir == 'right'
-            ? center + 48
-            : center,
-        top: dir == 'up'
-            ? center - 48
-            : dir == 'down'
-            ? center + 48
-            : center,
-        child: Container(
-          width: itemSize,
-          height: itemSize,
-          decoration: BoxDecoration(
-            color: selected ? Colors.blueAccent : Colors.white,
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.black12),
-            boxShadow: selected
-                ? const [
-                    BoxShadow(
-                      color: Colors.black26,
-                      blurRadius: 4,
-                      offset: Offset(0, 2),
-                    ),
-                  ]
-                : null,
-          ),
-          alignment: Alignment.center,
-          child: Tooltip(
-            message: label,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4.0),
-              child: Text(
-                _shortLabel(label),
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: selected ? Colors.white : Colors.black87,
-                  fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    // center は表示しないため center 選択フラグは作らない（ハイライトされない）
     final primaryUpSelected = _currentPrimary == 'up';
     final primaryRightSelected = _currentPrimary == 'right';
     final primaryLeftSelected = _currentPrimary == 'left';
@@ -415,18 +419,144 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
           ),
         ),
       ),
-      // center を含めず、上下左右のみ表示
-      option('up', _labelFor(chore, 'up'), selected: primaryUpSelected),
-      option(
+      // 上
+      _buildOptionWidget('up', chore, center, itemSize, primaryUpSelected),
+      // 右
+      _buildOptionWidget(
         'right',
-        _labelFor(chore, 'right'),
-        selected: primaryRightSelected,
+        chore,
+        center,
+        itemSize,
+        primaryRightSelected,
       ),
-      option('left', _labelFor(chore, 'left'), selected: primaryLeftSelected),
-      option('down', _labelFor(chore, 'down'), selected: primaryDownSelected),
+      // 左
+      _buildOptionWidget('left', chore, center, itemSize, primaryLeftSelected),
+      // 下
+      _buildOptionWidget('down', chore, center, itemSize, primaryDownSelected),
     ];
 
-    return Stack(children: stack);
+    // 親 Stack の clip を解除して、子の Positioned が外にはみ出して描画できるようにする
+    return Stack(children: stack, clipBehavior: Clip.none);
+  }
+
+  Positioned _buildOptionWidget(
+    String dir,
+    String chore,
+    double center,
+    double itemSize,
+    bool selected,
+  ) {
+    final label = _labelFor(chore, dir);
+    final rem = _remainingCooldown(chore, dir);
+    final disabled = rem != null;
+    // 選択中かつクールダウン中なら subLabel を表示
+    final subLabel = (disabled && selected) ? _formatRemaining(rem!) : null;
+
+    final left =
+        (dir == 'left'
+                ? center - 48
+                : dir == 'right'
+                ? center + 48
+                : center)
+            .clamp(0.0, double.infinity);
+    final top =
+        (dir == 'up'
+                ? center - 48
+                : dir == 'down'
+                ? center + 48
+                : center)
+            .clamp(0.0, double.infinity);
+
+    final bgColor = disabled
+        ? (selected ? Colors.grey.shade400 : Colors.grey.shade300)
+        : (selected ? Colors.blueAccent : Colors.white);
+    final textColor = disabled
+        ? Colors.black54
+        : (selected ? Colors.white : Colors.black87);
+
+    return Positioned(
+      left: left,
+      top: top,
+      child: Material(
+        color: Colors.transparent,
+        child: Stack(
+          clipBehavior: Clip.none,
+          alignment: Alignment.center,
+          children: [
+            Container(
+              width: itemSize,
+              height: itemSize,
+              decoration: BoxDecoration(
+                color: bgColor,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.black12),
+                boxShadow: (!disabled && selected)
+                    ? const [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 4,
+                          offset: Offset(0, 2),
+                        ),
+                      ]
+                    : null,
+              ),
+              alignment: Alignment.center,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6.0),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    _shortLabel(label),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: textColor,
+                      fontWeight: selected && !disabled
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // subLabel をボタンの上に重ねて表示（円の外上方ではなく被せる）
+            if (subLabel != null)
+              // ボタン中央に重ね、少し上に移動させて被せる
+              Positioned(
+                top: itemSize * 0.12,
+                child: FractionalTranslation(
+                  translation: const Offset(0, -0.35),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6.0,
+                      vertical: 4.0,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.75),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: itemSize * 1.3),
+                      child: Text(
+                        subLabel,
+                        textAlign: TextAlign.center,
+                        softWrap: true,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 9,
+                          height: 1.0,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   String _labelFor(String chore, String dir) {
@@ -443,24 +573,9 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
         return '左';
       case 'down':
         return '下';
-      case 'center':
       default:
-        return '中';
+        return '';
     }
-  }
-
-  Offset _offsetForPrimary(String dir, double center) {
-    final dx = dir == 'left'
-        ? center - 48
-        : dir == 'right'
-        ? center + 48
-        : center;
-    final dy = dir == 'up'
-        ? center - 48
-        : dir == 'down'
-        ? center + 48
-        : center;
-    return Offset(dx, dy);
   }
 
   String _shortLabel(String label) {
