@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -19,6 +20,8 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   Offset? _primaryOrigin;
 
   String _currentPrimary = 'center';
+
+  Timer? _midnightTimer; // 表示更新用（データ削除しない）
 
   // record persistence key
   static const String _prefsKey = 'chore_logs_v1';
@@ -125,6 +128,13 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   void initState() {
     super.initState();
     _loadRecords();
+    _scheduleMidnightRefresh();
+  }
+
+  @override
+  void dispose() {
+    _midnightTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadRecords() async {
@@ -236,7 +246,7 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
                 children: [
                   const Spacer(),
                   Text(
-                    '本日の獲得ポイント：${_todayTotalPoints()} p',
+                    '本日の獲得予定ポイント：${_todayTotalPoints()} p',
                     style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
@@ -321,15 +331,15 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
                   ),
                   const Divider(height: 1),
                   Expanded(
-                    child: _records.isEmpty
+                    child: _todayRecords.isEmpty
                         ? const Center(child: Text('まだ記録がありません'))
                         : ListView.builder(
                             padding: const EdgeInsets.symmetric(vertical: 6),
-                            itemCount: _records.length,
+                            itemCount: _todayRecords.length,
                             itemBuilder: (context, idx) {
-                              // show newest first
-                              final i = _records.length - 1 - idx;
-                              final r = _records[i];
+                              // show newest first (当日分のみ)
+                              final i = _todayRecords.length - 1 - idx;
+                              final r = _todayRecords[i];
                               final ts = r['ts'] is int
                                   ? r['ts'] as int
                                   : int.tryParse('${r['ts']}') ?? 0;
@@ -379,7 +389,15 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
                                     const SizedBox(width: 8),
                                     IconButton(
                                       icon: const Icon(Icons.close, size: 20),
-                                      onPressed: () => _confirmDeleteRecord(i),
+                                      // 削除は元の _records インデックスを再計算する
+                                      onPressed: () {
+                                        final originalIndex = _records.indexOf(
+                                          r,
+                                        );
+                                        if (originalIndex != -1) {
+                                          _confirmDeleteRecord(originalIndex);
+                                        }
+                                      },
                                     ),
                                   ],
                                 ),
@@ -424,14 +442,7 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(chore),
-            const SizedBox(height: 4),
-            Text(
-              '${count}',
-              style: const TextStyle(fontSize: 12, color: Colors.white70),
-            ),
-          ],
+          children: [Text(chore), const SizedBox(height: 4)],
         ),
       ),
     );
@@ -576,7 +587,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
     setState(() {}); // update header total and logs
   }
 
-  // ...existing code...
   void _showFloatingCount(Offset globalPosition, String text) {
     final overlay = Overlay.of(context);
     if (overlay == null) return;
@@ -895,5 +905,29 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
       setState(() {});
       _overlayEntry?.markNeedsBuild();
     }
+  }
+
+  // 当日分のみを抽出（表示専用）
+  List<Map<String, dynamic>> get _todayRecords {
+    final mid = _todayMidnight();
+    return _records.where((r) {
+      final ts = r['ts'] is int
+          ? r['ts'] as int
+          : int.tryParse('${r['ts']}') ?? 0;
+      final dt = DateTime.fromMillisecondsSinceEpoch(ts);
+      return !dt.isBefore(mid);
+    }).toList();
+  }
+
+  void _scheduleMidnightRefresh() {
+    _midnightTimer?.cancel();
+    final now = DateTime.now();
+    final nextMidnight = DateTime(now.year, now.month, now.day + 1);
+    final duration = nextMidnight.difference(now) + const Duration(seconds: 1);
+    _midnightTimer = Timer(duration, () {
+      // 0時を跨いだらUIを再構築（records自体は保持）
+      setState(() {});
+      _scheduleMidnightRefresh(); // 次の日も再スケジュール
+    });
   }
 }
