@@ -35,77 +35,73 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
   // 各方向オブジェクトは { 'label': '...', 'count': n, optional 'cooldownMinutes': m } とする。
   // center は表示されないため定義していない。
   final Map<String, Map<String, dynamic>> _choreActionMap = {
+    '朝ご飯': {
+      'label': '朝ご飯',
+      'up': {'label': '簡単に', 'count': 1},
+      'right': {'label': 'しっかり', 'count': 3},
+      'left': {'label': '片付け', 'count': 3},
+      'down': {'label': '皿洗い', 'count': 5},
+    },
+    '昼ご飯': {
+      'label': '昼ご飯',
+      'up': {'label': '簡単に', 'count': 1},
+      'right': {'label': 'しっかり', 'count': 3},
+      'left': {'label': '片付け', 'count': 3},
+      'down': {'label': '皿洗い', 'count': 5},
+    },
+    '夜ご飯': {
+      'label': '夜ご飯',
+      'up': {'label': '簡単に', 'count': 3},
+      'right': {'label': 'しっかり', 'count': 5},
+      'left': {'label': '片付け', 'count': 3},
+      'down': {'label': '皿洗い', 'count': 7},
+    },
     '掃除': {
       'label': '掃除',
-
       'up': {'label': '部分掃除', 'count': 2},
       'right': {'label': '掃除機', 'count': 3},
       'left': {'label': '拭き掃除', 'count': 4},
       'down': {'label': 'その他', 'count': 5},
     },
-    '朝ご飯': {
-      'label': '朝ご飯',
-
-      'up': {'label': '簡単に', 'count': 1},
-      'right': {'label': 'しっかり', 'count': 2},
-      'left': {'label': '片付け', 'count': 1},
-      'down': {'label': 'その他', 'count': 3},
-    },
     'キッチン': {
       'label': 'キッチン',
-
       'up': {'label': '部分清掃', 'count': 2},
-      'right': {
-        'label': 'シンク掃除',
-        'count': 3,
-        'cooldownMinutes': 180,
-      }, // 3時間のクールダウン（例）
+      'right': {'label': 'シンク掃除', 'count': 3, 'cooldownMinutes': 180},
       'left': {'label': '床拭き', 'count': 4},
       'down': {'label': 'その他', 'count': 5},
     },
+
     '洗面所': {
       'label': '洗面所',
-
       'up': {'label': '鏡磨き', 'count': 1},
       'right': {'label': '掃除', 'count': 2},
       'left': {'label': '整理', 'count': 2},
       'down': {'label': 'その他', 'count': 3},
     },
-    '玄関の靴を揃えた': {
-      'label': '玄関の靴を揃えた',
-
-      'up': {'label': '片付け', 'count': 1},
-      'right': {'label': '整列', 'count': 1},
-      'left': {'label': '掃除', 'count': 2},
-      'down': {'label': 'その他', 'count': 3},
+    '風呂準備': {
+      'label': '風呂準備',
+      'up': {'label': 'お湯を抜いた', 'count': 1},
+      'right': {'label': '浴槽を洗った', 'count': 2},
+      'left': {'label': '浴室を洗った', 'count': 2},
+      'down': {'label': 'お湯を張った', 'count': 3},
     },
     '洗濯物': {
       'label': '洗濯物',
-
-      'up': {'label': 'しまった', 'count': 2},
+      'up': {'label': '洗濯機', 'count': 2},
       'right': {'label': '干した', 'count': 10},
       'left': {'label': '畳んだ', 'count': 5},
-      'down': {'label': 'その他', 'count': 1},
+      'down': {'label': '収納した', 'count': 1},
     },
-    '洗濯機を回した': {
-      'label': '洗濯機を回した',
 
-      'up': {'label': '短', 'count': 1},
-      'right': {'label': '通常', 'count': 1},
-      'left': {'label': '長', 'count': 2},
-      'down': {'label': 'その他', 'count': 1},
-    },
     'ゴミ出し': {
       'label': 'ゴミ出し',
-
-      'up': {'label': '可燃', 'count': 1},
-      'right': {'label': '不燃', 'count': 1},
-      'left': {'label': '資源', 'count': 1},
+      'up': {'label': '集めて回った', 'count': 1},
+      'right': {'label': '袋をセットした', 'count': 1},
+      'left': {'label': '置き場場に持って行った', 'count': 1},
       'down': {'label': 'その他', 'count': 2},
     },
     '買い物': {
       'label': '買い物',
-
       'up': {'label': '少量', 'count': 1},
       'right': {'label': '通常', 'count': 2},
       'left': {'label': 'まとめ買い', 'count': 5},
@@ -113,7 +109,6 @@ class _ChoreLoggingScreenState extends State<ChoreLoggingScreen>
     },
     'ペットの世話': {
       'label': 'ペットの世話',
-
       'up': {'label': '餌', 'count': 1},
       'right': {'label': '散歩', 'count': 1},
       'left': {'label': '掃除', 'count': 2},
